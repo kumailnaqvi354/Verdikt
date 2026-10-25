@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 };
 
 // The starter's Gemini chat and Paid API pages are left out: Verdikt uses Groq and pays workers directly.
-const links = [{ href: "/", label: "Review" }, ...modules.filter((m) => m.href && m.id === "race").map((m) => ({ href: m.href!, label: m.name }))];
+const links = [{ href: "/", label: "Review" }, { href: "/claim", label: "Add a claim" }, ...modules.filter((m) => m.href && m.id === "race").map((m) => ({ href: m.href!, label: m.name }))];
 const usesPayments = modules.some((m) => m.id === "payments");
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
