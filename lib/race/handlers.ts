@@ -7,6 +7,9 @@
 import { TaskError, type Task, type TaskOutput, type TaskRequest, type TaskType, type ToolSpec } from "./protocol";
 import { callTool, ToolCallError } from "./tools";
 import { askGroq, chatGroq, MissingGroqKeyError, type ChatMessage, type ToolDefinition } from "../ai/groq";
+import { loadAgentSigner } from "../payments/client";
+import { PaymentsConfigError } from "../payments/config";
+import { payUsdc } from "../payments/transfer";
 
 /** Maps a model failure to a protocol error so the verifier gets a clear reason. */
 function modelError(e: unknown): TaskError {
@@ -83,6 +86,148 @@ async function callToolReliably(tool: ToolSpec, task: Task, input: Record<string
   }
 }
 
+/**
+ * Agentic payment: the model reads the instruction and works out who to pay, how much and with which memo;
+ * the code then checks that against the instruction and the spend limit before payUsdc signs anything.
+ */
+async function payFromInstruction(task: Task): Promise<TaskOutput> {
+  const instruction = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
+  if (!instruction.trim()) throw new TaskError("invalid_input", "task.input is empty.");
+
+  let plan: Record<string, unknown> | undefined;
+  try {
+    const reply = await chatGroq(
+      [
+        {
+          role: "system",
+          content:
+            'You plan a devnet USDC payment from an instruction. Reply with only a JSON object: {"to": "<recipient Solana address>", "amountUsdc": <number>, "memo": "<memo text, without quotes>"}. ' +
+            "Copy the address and memo exactly as written in the instruction.",
+        },
+        { role: "user", content: instruction },
+      ],
+      { json: true, reasoningEffort: "low" },
+    );
+    plan = parseJsonObject(reply.content ?? "");
+  } catch (e) {
+    throw modelError(e);
+  }
+  const to = typeof plan?.to === "string" ? plan.to.trim() : "";
+  const memo = typeof plan?.memo === "string" ? plan.memo : undefined;
+  const amountUsdc = Number(plan?.amountUsdc);
+
+  // Guards: never pay an address or memo the instruction doesn't contain, or more than the limit.
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(to) || !instruction.includes(to)) throw new TaskError("invalid_input", "No valid recipient address found in the instruction.");
+  if (memo !== undefined && !instruction.includes(memo)) throw new TaskError("invalid_input", "The memo doesn't match the instruction.");
+  if (!Number.isFinite(amountUsdc) || amountUsdc <= 0) throw new TaskError("invalid_input", "No valid amount found in the instruction.");
+  const max = task.limits?.maxSpendUsd;
+  if (max !== undefined && amountUsdc > max) throw new TaskError("limit_exceeded", `Paying ${amountUsdc} USDC would exceed maxSpendUsd (${max}).`);
+
+  try {
+    const { signature } = await payUsdc(await loadAgentSigner(), { to, amountUsdc, memo });
+    return { text: `Paid ${amountUsdc} devnet USDC to ${to}${memo ? ` with memo "${memo}"` : ""}.`, data: { signature } };
+  } catch (e) {
+    if (e instanceof PaymentsConfigError) throw new TaskError("internal", e.message);
+    throw new TaskError("upstream_unavailable", `Payment failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Tool-calling loop shared by use_tools and run_workflow: the model picks tools, we call them for real. */
+async function runToolLoop(task: Task): Promise<TaskOutput> {
+  const instruction = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
+  if (!instruction.trim()) throw new TaskError("invalid_input", "task.input is empty.");
+  if (!task.tools?.length) throw new TaskError("invalid_input", "use_tools needs at least one tool in task.tools.");
+
+  const byName = new Map(task.tools.map((t) => [t.name, t]));
+  const definitions: ToolDefinition[] = task.tools.map((t) => ({
+    type: "function",
+    function: { name: t.name, description: t.description, parameters: { type: "object", ...t.inputSchema } },
+  }));
+  const maxCalls = task.limits?.maxToolCalls ?? 12;
+  const toolResults: NonNullable<TaskOutput["toolResults"]> = [];
+  const messages: ChatMessage[] = [
+    {
+      role: "system",
+      content:
+        "You complete the user's task by calling the provided tools. Never guess or invent data: every fact and number must come from a tool result. " +
+        "Call a tool once per item you need. Do every calculation with the calculate tool, never in your head. " +
+        (task.schema
+          ? `When you have everything, call ${FINAL_ANSWER} with the result (numbers as JSON numbers).`
+          : "When you have everything, reply with the final answer only, in plain text without markdown, following any requested format."),
+    },
+    { role: "user", content: instruction },
+  ];
+  // With a schema, the answer is a tool call whose parameters ARE the schema: the arguments become
+  // output.data. (gpt-oss tends to emit structured answers as tool calls anyway.)
+  const localTools: ToolDefinition[] = [
+    ...(byName.has(CALCULATE.function.name) ? [] : [CALCULATE]),
+    ...(task.schema && !byName.has(FINAL_ANSWER)
+      ? [{ type: "function" as const, function: { name: FINAL_ANSWER, description: "Submit the final answer.", parameters: task.schema } }]
+      : []),
+  ];
+  const finish = (content: string | null): TaskOutput => {
+    const text = (content ?? "").trim();
+    if (!task.schema) return { text, toolResults };
+    const data = parseJsonObject(text);
+    if (data === undefined) throw new TaskError("internal", `The model's final answer wasn't valid JSON for task.schema: ${text.slice(0, 200) || "(empty)"}`);
+    return { text, data, toolResults };
+  };
+
+  let calls = 0;
+  let nudges = 0;
+  for (let turn = 0; turn < maxCalls + 4; turn++) {
+    let reply;
+    try {
+      reply = await chatGroq(messages, { tools: [...definitions, ...localTools], reasoningEffort: "low" });
+    } catch (e) {
+      throw modelError(e);
+    }
+    if (!reply.tool_calls?.length) {
+      // gpt-oss sometimes ends with an empty or non-JSON reply instead of calling final_answer: ask again.
+      if (task.schema && parseJsonObject(reply.content ?? "") === undefined && nudges < 2) {
+        nudges++;
+        if (reply.content) messages.push({ role: "assistant", content: reply.content });
+        messages.push({ role: "user", content: `Now call ${FINAL_ANSWER} with the result.` });
+        continue;
+      }
+      return finish(reply.content);
+    }
+
+    const answer = task.schema && !byName.has(FINAL_ANSWER) ? reply.tool_calls.find((c) => c.function.name === FINAL_ANSWER) : undefined;
+    if (answer) return finish(answer.function.arguments);
+
+    messages.push({ role: "assistant", content: reply.content, tool_calls: reply.tool_calls });
+    for (const call of reply.tool_calls) {
+      const tool = byName.get(call.function.name);
+      let content: string;
+      if (call.function.name === CALCULATE.function.name && !tool) {
+        let args: { expression?: unknown } = {};
+        try {
+          args = JSON.parse(call.function.arguments || "{}");
+        } catch {}
+        content = calculate(args.expression);
+      } else if (!tool) {
+        content = JSON.stringify({ error: `Unknown tool ${call.function.name}` });
+      } else if (calls >= maxCalls) {
+        content = JSON.stringify({ error: `Tool call limit (${maxCalls}) reached. Answer with what you have.` });
+      } else {
+        calls++;
+        let input: Record<string, unknown>;
+        try {
+          input = JSON.parse(call.function.arguments || "{}");
+        } catch {
+          input = {};
+        }
+        const outcome = await callToolReliably(tool, task, input);
+        if (outcome.ok) toolResults.push({ tool: tool.name, result: outcome.result });
+        content = JSON.stringify(outcome.ok ? outcome.result : { error: outcome.error });
+      }
+      messages.push({ role: "tool", tool_call_id: call.id, content });
+    }
+  }
+  throw new TaskError("limit_exceeded", `No final answer within ${maxCalls} tool calls.`);
+}
+
 type Handler = ((task: Task, request: TaskRequest) => Promise<TaskOutput>) & { notImplemented?: boolean };
 
 /** Marks a task type you haven't built yet. The verifier gets a clear error instead of a wrong answer. */
@@ -111,100 +256,7 @@ export const handlers: Record<TaskType, Handler> = {
   // Tool Calling and Reliability: decide which of task.tools to call (callTool), use their results
   // in your answer, and report them in output.toolResults. Map tool failures to
   // upstream_unavailable / upstream_timeout.
-  use_tools: async (task) => {
-    const instruction = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
-    if (!instruction.trim()) throw new TaskError("invalid_input", "task.input is empty.");
-    if (!task.tools?.length) throw new TaskError("invalid_input", "use_tools needs at least one tool in task.tools.");
-
-    const byName = new Map(task.tools.map((t) => [t.name, t]));
-    const definitions: ToolDefinition[] = task.tools.map((t) => ({
-      type: "function",
-      function: { name: t.name, description: t.description, parameters: { type: "object", ...t.inputSchema } },
-    }));
-    const maxCalls = task.limits?.maxToolCalls ?? 12;
-    const toolResults: NonNullable<TaskOutput["toolResults"]> = [];
-    const messages: ChatMessage[] = [
-      {
-        role: "system",
-        content:
-          "You complete the user's task by calling the provided tools. Never guess or invent data: every fact and number must come from a tool result. " +
-          "Call a tool once per item you need. Do every calculation with the calculate tool, never in your head. " +
-          (task.schema
-            ? `When you have everything, call ${FINAL_ANSWER} with the result (numbers as JSON numbers).`
-            : "When you have everything, reply with the final answer only, in plain text without markdown, following any requested format."),
-      },
-      { role: "user", content: instruction },
-    ];
-    // With a schema, the answer is a tool call whose parameters ARE the schema: the arguments become
-    // output.data. (gpt-oss tends to emit structured answers as tool calls anyway.)
-    const localTools: ToolDefinition[] = [
-      ...(byName.has(CALCULATE.function.name) ? [] : [CALCULATE]),
-      ...(task.schema && !byName.has(FINAL_ANSWER)
-        ? [{ type: "function" as const, function: { name: FINAL_ANSWER, description: "Submit the final answer.", parameters: task.schema } }]
-        : []),
-    ];
-    const finish = (content: string | null): TaskOutput => {
-      const text = (content ?? "").trim();
-      if (!task.schema) return { text, toolResults };
-      const data = parseJsonObject(text);
-      if (data === undefined) throw new TaskError("internal", `The model's final answer wasn't valid JSON for task.schema: ${text.slice(0, 200) || "(empty)"}`);
-      return { text, data, toolResults };
-    };
-
-    let calls = 0;
-    let nudges = 0;
-    for (let turn = 0; turn < maxCalls + 4; turn++) {
-      let reply;
-      try {
-        reply = await chatGroq(messages, { tools: [...definitions, ...localTools], reasoningEffort: "low" });
-      } catch (e) {
-        throw modelError(e);
-      }
-      if (!reply.tool_calls?.length) {
-        // gpt-oss sometimes ends with an empty or non-JSON reply instead of calling final_answer: ask again.
-        if (task.schema && parseJsonObject(reply.content ?? "") === undefined && nudges < 2) {
-          nudges++;
-          if (reply.content) messages.push({ role: "assistant", content: reply.content });
-          messages.push({ role: "user", content: `Now call ${FINAL_ANSWER} with the result.` });
-          continue;
-        }
-        return finish(reply.content);
-      }
-
-      const answer = task.schema && !byName.has(FINAL_ANSWER) ? reply.tool_calls.find((c) => c.function.name === FINAL_ANSWER) : undefined;
-      if (answer) return finish(answer.function.arguments);
-
-      messages.push({ role: "assistant", content: reply.content, tool_calls: reply.tool_calls });
-      for (const call of reply.tool_calls) {
-        const tool = byName.get(call.function.name);
-        let content: string;
-        if (call.function.name === CALCULATE.function.name && !tool) {
-          let args: { expression?: unknown } = {};
-          try {
-            args = JSON.parse(call.function.arguments || "{}");
-          } catch {}
-          content = calculate(args.expression);
-        } else if (!tool) {
-          content = JSON.stringify({ error: `Unknown tool ${call.function.name}` });
-        } else if (calls >= maxCalls) {
-          content = JSON.stringify({ error: `Tool call limit (${maxCalls}) reached. Answer with what you have.` });
-        } else {
-          calls++;
-          let input: Record<string, unknown>;
-          try {
-            input = JSON.parse(call.function.arguments || "{}");
-          } catch {
-            input = {};
-          }
-          const outcome = await callToolReliably(tool, task, input);
-          if (outcome.ok) toolResults.push({ tool: tool.name, result: outcome.result });
-          content = JSON.stringify(outcome.ok ? outcome.result : { error: outcome.error });
-        }
-        messages.push({ role: "tool", tool_call_id: call.id, content });
-      }
-    }
-    throw new TaskError("limit_exceeded", `No final answer within ${maxCalls} tool calls.`);
-  },
+  use_tools: (task) => runToolLoop(task),
 
   // External Knowledge: answer from task.source (searchSource) and cite the document ids you used.
   answer_from_source: notYet("answer_from_source", "handlers.answer_from_source"),
@@ -218,5 +270,6 @@ export const handlers: Record<TaskType, Handler> = {
   // The on-chain payment stage also sends a run_workflow task ("Pay 0.01 devnet USDC to <address>
   // with the memo …"). With the payments module: payUsdc(await loadAgentSigner(), { to, amountUsdc, memo })
   // from ../payments/transfer, then return { data: { signature } }.
-  run_workflow: notYet("run_workflow", "handlers.run_workflow"),
+  // With tools it's a multi-step workflow (same loop as use_tools); without, it's the on-chain payment stage.
+  run_workflow: (task) => (task.tools?.length ? runToolLoop(task) : payFromInstruction(task)),
 };
