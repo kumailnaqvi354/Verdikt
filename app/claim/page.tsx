@@ -22,11 +22,13 @@ export default function ClaimPage() {
   const [loading, setLoading] = useState<"extract" | "attest" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const edit = (patch: Partial<Claim>) => setClaim((c) => (c ? { ...c, ...patch } : c));
+
   async function call(action: "extract" | "attest") {
     setLoading(action);
     setError(null);
     try {
-      const res = await fetch("/api/claims", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(action === "extract" ? { action, letter } : { action, claim }) });
+      const res = await fetch("/api/claims", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(action === "extract" ? { action, letter } : { action, claim, letter }) });
       const data = (await res.json()) as { claim?: Claim; insurerName?: string; record?: Record; error?: string };
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       if (data.claim) {
@@ -63,14 +65,53 @@ export default function ClaimPage() {
 
       {claim && (
         <Module label="B · Check the record" right={record ? <><Led tone="ok" /> Attested</> : "Step 2"}>
-          <dl className="kv">
-            {(Object.keys(LABELS) as (keyof Claim)[]).map((k) => (
-              <div key={k} style={{ display: "contents" }}>
-                <dt>{LABELS[k]}</dt>
-                <dd>{k === "insurerId" ? insurerName ?? claim[k] : claim[k] ?? "—"}</dd>
+          {record ? (
+            <dl className="kv">
+              {(Object.keys(LABELS) as (keyof Claim)[]).map((k) => (
+                <div key={k} style={{ display: "contents" }}>
+                  <dt>{LABELS[k]}</dt>
+                  <dd>{k === "insurerId" ? insurerName ?? claim[k] : claim[k] ?? "—"}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            // Editable: the claimant corrects anything the AI misread before it's attested.
+            <div className="stack">
+              <span className="small muted">Check what the AI read and correct anything wrong before attesting.</span>
+              <div className="cols">
+                <label className="stack small">
+                  <span className="label">{LABELS.insurerId}</span>
+                  <input value={insurerName ?? claim.insurerId} disabled />
+                </label>
+                <label className="stack small">
+                  <span className="label">{LABELS.type}</span>
+                  <select value={claim.type} onChange={(e) => edit({ type: e.target.value })} disabled={loading !== null}>
+                    {["home", "motor", "travel", "pet"].map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </label>
+                <label className="stack small">
+                  <span className="label">{LABELS.outcome}</span>
+                  <select value={claim.outcome} onChange={(e) => edit({ outcome: e.target.value })} disabled={loading !== null}>
+                    {["paid", "partially_paid", "denied"].map((o) => <option key={o} value={o}>{o.replace("_", " ")}</option>)}
+                  </select>
+                </label>
               </div>
-            ))}
-          </dl>
+              <div className="cols">
+                <label className="stack small">
+                  <span className="label">{LABELS.daysToSettle}</span>
+                  <input type="number" min={0} value={claim.daysToSettle} onChange={(e) => edit({ daysToSettle: Number(e.target.value) })} disabled={loading !== null} />
+                </label>
+                <label className="stack small">
+                  <span className="label">{LABELS.year}</span>
+                  <input type="number" value={claim.year} onChange={(e) => edit({ year: Number(e.target.value) })} disabled={loading !== null} />
+                </label>
+                <label className="stack small">
+                  <span className="label">{LABELS.denialReason}</span>
+                  <input value={claim.denialReason ?? ""} placeholder={claim.outcome === "paid" ? "Not needed when paid" : ""} onChange={(e) => edit({ denialReason: e.target.value || null })} disabled={loading !== null || claim.outcome === "paid"} />
+                </label>
+              </div>
+            </div>
+          )}
           {!record && (
             <div className="row">
               <button className="btn btn--primary" onClick={() => call("attest")} disabled={loading !== null}>

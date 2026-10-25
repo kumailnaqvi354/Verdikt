@@ -1,5 +1,5 @@
 import "server-only";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   appendTransactionMessageInstructions, createSolanaRpc, createTransactionMessage, getBase64EncodedWireTransaction, getSignatureFromTransaction,
   getUtf8Encoder, pipe, setTransactionMessageFeePayerSigner, setTransactionMessageLifetimeUsingBlockhash, signTransactionMessageWithSigners,
@@ -18,6 +18,10 @@ const TYPES: ClaimType[] = ["home", "motor", "travel", "pet"];
 const OUTCOMES: Outcome[] = ["paid", "partially_paid", "denied"];
 
 export class ClaimError extends Error {}
+
+/** Fingerprints of letters already attested (whitespace- and case-normalised); the letters themselves are never kept. */
+const attestedLetters = new Set<string>();
+const letterFingerprint = (letter: string) => createHash("sha256").update(letter.replace(/\s+/g, " ").trim().toLowerCase()).digest("hex");
 
 export async function extractClaim(letter: string): Promise<ExtractedClaim> {
   if (letter.trim().length < 40) throw new ClaimError("Paste the full decision letter (at least a couple of sentences).");
@@ -61,7 +65,10 @@ export function validate(c: Record<string, unknown>): ExtractedClaim {
 }
 
 /** Writes the record's hash to devnet in a memo, signed by the app's wallet, and adds the record to the store. */
-export async function attestClaim(claim: ExtractedClaim): Promise<ClaimRecord> {
+export async function attestClaim(claim: ExtractedClaim, letter: string): Promise<ClaimRecord> {
+  const fingerprint = letterFingerprint(letter);
+  if (!letter.trim()) throw new ClaimError("The letter is missing.");
+  if (attestedLetters.has(fingerprint)) throw new ClaimError("This letter has already been attested: each claim counts once.");
   const base = { id: `${claim.insurerId}-u${randomBytes(3).toString("hex")}`, ...claim };
   const hash = recordHash(base);
   const signer = await loadAgentSigner();
@@ -82,6 +89,7 @@ export async function attestClaim(claim: ExtractedClaim): Promise<ClaimRecord> {
     if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") {
       const record: ClaimRecord = { ...base, hash, source: "attested", attestation: signature };
       addAttestedRecord(record);
+      attestedLetters.add(fingerprint);
       return record;
     }
     await new Promise((r) => setTimeout(r, 1000));
