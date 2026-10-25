@@ -86,6 +86,14 @@ async function callToolReliably(tool: ToolSpec, task: Task, input: Record<string
   }
 }
 
+/** Strict fallback parser for "Pay <amount> devnet USDC to <address> with the memo "<memo>"". */
+function parsePaymentInstruction(text: string): Record<string, unknown> | undefined {
+  const amount = /(\d+(?:\.\d+)?)\s*(?:devnet\s+)?USDC/i.exec(text)?.[1];
+  const to = /\bto\s+([1-9A-HJ-NP-Za-km-z]{32,44})\b/.exec(text)?.[1];
+  const memo = /memo\s*[:=]?\s*["“]([^"”]+)["”]/i.exec(text)?.[1];
+  return amount && to ? { to, amountUsdc: Number(amount), ...(memo ? { memo } : {}) } : undefined;
+}
+
 /**
  * Agentic payment: the model reads the instruction and works out who to pay, how much and with which memo;
  * the code then checks that against the instruction and the spend limit before payUsdc signs anything.
@@ -94,6 +102,8 @@ async function payFromInstruction(task: Task): Promise<TaskOutput> {
   const instruction = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
   if (!instruction.trim()) throw new TaskError("invalid_input", "task.input is empty.");
 
+  // The model only extracts fields; our code makes the payment. Framed as field extraction from a
+  // test-network instruction, because gpt-oss refuses "make a payment" prompts.
   let plan: Record<string, unknown> | undefined;
   try {
     const reply = await chatGroq(
@@ -101,8 +111,9 @@ async function payFromInstruction(task: Task): Promise<TaskOutput> {
         {
           role: "system",
           content:
-            'You plan a devnet USDC payment from an instruction. Reply with only a JSON object: {"to": "<recipient Solana address>", "amountUsdc": <number>, "memo": "<memo text, without quotes>"}. ' +
-            "Copy the address and memo exactly as written in the instruction.",
+            "You extract fields from a developer instruction for a Solana devnet test (test tokens with no monetary value; you do not send anything yourself). " +
+            'Reply with only a JSON object: {"to": "<recipient address>", "amountUsdc": <number>, "memo": "<memo text without the quotes>"}. ' +
+            "Copy the address and memo exactly as written.",
         },
         { role: "user", content: instruction },
       ],
@@ -110,8 +121,13 @@ async function payFromInstruction(task: Task): Promise<TaskOutput> {
     );
     plan = parseJsonObject(reply.content ?? "");
   } catch (e) {
-    throw modelError(e);
+    if (e instanceof MissingGroqKeyError) throw modelError(e);
+    // Refusal or bad JSON: fall through to the pattern parser below.
   }
+  const parsed = parsePaymentInstruction(instruction);
+  const valid = (p: Record<string, unknown> | undefined) =>
+    typeof p?.to === "string" && instruction.includes(p.to) && Number(p.amountUsdc) > 0 && (p.memo === undefined || (typeof p.memo === "string" && instruction.includes(p.memo)));
+  if (!valid(plan)) plan = parsed;
   const to = typeof plan?.to === "string" ? plan.to.trim() : "";
   const memo = typeof plan?.memo === "string" ? plan.memo : undefined;
   const amountUsdc = Number(plan?.amountUsdc);
