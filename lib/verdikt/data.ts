@@ -95,6 +95,27 @@ export function findInsurer(idOrName: string): Insurer | undefined {
   return INSURERS.find((i) => i.id === q || i.name.toLowerCase() === q);
 }
 
+// Fictional demo claimants for the Claimant Passport: the same verified records, seen from the
+// customer's side. Each links a few seeded records by id.
+export interface Claimant {
+  id: string;
+  name: string;
+  passportNo: string;
+  memberSince: number;
+  recordIds: string[];
+}
+
+export const CLAIMANTS: Claimant[] = [
+  { id: "amara", name: "Amara Okafor", passportNo: "VDK-204817", memberSince: 2023, recordIds: ["northbridge-004", "meridian-011", "harbour-019"] },
+  { id: "tom", name: "Tom Whitfield", passportNo: "VDK-311952", memberSince: 2024, recordIds: ["kestrel-007", "kestrel-022"] },
+  { id: "priya", name: "Priya Raman", passportNo: "VDK-128460", memberSince: 2023, recordIds: ["albion-003", "tidewell-015", "meridian-002", "northbridge-030"] },
+  { id: "jonas", name: "Jonas Becker", passportNo: "VDK-457039", memberSince: 2025, recordIds: ["harbour-008"] },
+];
+
+export function claimantRecords(c: Claimant): ClaimRecord[] {
+  return c.recordIds.map((id) => seeded.find((r) => r.id === id)).filter((r): r is ClaimRecord => !!r);
+}
+
 // Worker agents. Agent A pays each one in devnet USDC before it runs. These addresses are the
 // workers' receiving wallets (test money only).
 export const WORKERS = [
