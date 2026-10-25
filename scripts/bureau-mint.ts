@@ -117,6 +117,6 @@ if (process.argv.includes("--present")) {
     ),
   );
   const presented = await sendAndConfirm(present);
-  const tx2 = await rpc.getTransaction(presented, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).send();
-  console.log("presented:", presented, { memo: `${challengeId}:${code}`, slotsAfterMint: tx2 ? (BigInt(tx2.slot) - issuedSlot).toString() : "unknown" });
+  const landed = (await rpc.getSignatureStatuses([presented]).send()).value[0];
+  console.log("presented:", presented, { memo: `${challengeId}:${code}`, slotsAfterMint: landed ? (BigInt(landed.slot) - issuedSlot).toString() : "unknown" });
 }
