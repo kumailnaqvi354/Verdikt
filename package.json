@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test:race": "tsx --test scripts/test-race.ts",
+    "test:race": "tsx --conditions=react-server --test scripts/test-race.ts",
     "race:try": "tsx scripts/race-try.ts",
     "keygen": "tsx scripts/keygen.ts",
     "wallets": "tsx scripts/wallets.ts",
