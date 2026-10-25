@@ -8,13 +8,16 @@ type LevelOption = { id: string; label: string; workers: number; totalUsdc: numb
 type Worker = { id: string; name: string; task: string };
 type Event =
   | { type: "plan"; insurer: string; workers: Worker[]; sequentialSeconds: number; parallelSeconds: number; totalUsdc: number; reasoning: string }
-  | { type: "payment"; worker: string; name: string; amountUsdc: number; signature: string; memo: string }
+  | { type: "payment"; worker: string; name: string; amountUsdc: number; signature: string; memo: string; payMs: number }
   | { type: "payment_failed"; worker: string; name: string; error: string }
-  | { type: "result"; worker: string; name: string; summary: string }
-  | { type: "review"; score: number; confidence: string; verdict: string; metrics: Record<string, string>; records: number; spentUsdc: number; signatures: string[] }
+  | { type: "result"; worker: string; name: string; summary: string; workMs: number; evidence: Evidence[] }
+  | { type: "review"; score: number; confidence: string; lowSample: boolean; verdict: string; metrics: Record<string, string>; records: number; spentUsdc: number; signatures: string[]; elapsedMs: number }
   | { type: "error"; message: string };
 
-type WorkerState = Worker & { status: "hiring" | "paid" | "done" | "failed"; signature?: string; amountUsdc?: number; summary?: string; error?: string };
+type Evidence = { id: string; type: string; outcome: string; daysToSettle: number; denialReason: string | null; year: number; source: string; attestation?: string };
+type WorkerState = Worker & { status: "hiring" | "paid" | "done" | "failed"; signature?: string; amountUsdc?: number; payMs?: number; summary?: string; workMs?: number; evidence?: Evidence[]; error?: string };
+
+const OUTCOME: Record<string, string> = { paid: "Paid", partially_paid: "Partly paid", denied: "Denied" };
 
 export function ReviewApp({ insurers, levels }: { insurers: Option[]; levels: LevelOption[] }) {
   const [insurer, setInsurer] = useState(insurers[0]?.id ?? "");
@@ -32,9 +35,9 @@ export function ReviewApp({ insurers, levels }: { insurers: Option[]; levels: Le
     if (e.type === "plan") {
       setPlan(e);
       setWorkers(e.workers.map((w) => ({ ...w, status: "hiring" })));
-    } else if (e.type === "payment") update(e.worker, { status: "paid", signature: e.signature, amountUsdc: e.amountUsdc });
+    } else if (e.type === "payment") update(e.worker, { status: "paid", signature: e.signature, amountUsdc: e.amountUsdc, payMs: e.payMs });
     else if (e.type === "payment_failed") update(e.worker, { status: "failed", error: e.error });
-    else if (e.type === "result") update(e.worker, { status: "done", summary: e.summary });
+    else if (e.type === "result") update(e.worker, { status: "done", summary: e.summary, workMs: e.workMs, evidence: e.evidence });
     else if (e.type === "review") setReview(e);
     else if (e.type === "error") setError(e.message);
   }
@@ -129,9 +132,31 @@ export function ReviewApp({ insurers, levels }: { insurers: Option[]; levels: Le
                   {w.signature && (
                     <span className="small">
                       Paid {w.amountUsdc} USDC: <ExplorerLink signature={w.signature} />
+                      {w.payMs !== undefined && <span className="muted"> · paid in {(w.payMs / 1000).toFixed(1)}s</span>}
+                      {w.workMs !== undefined && <span className="muted"> · worked in {w.workMs} ms</span>}
                     </span>
                   )}
                   {w.summary && <span className="small">{w.summary}</span>}
+                  {w.evidence && w.evidence.length > 0 && (
+                    <details className="small">
+                      <summary style={{ cursor: "pointer" }}>Show the {w.evidence.length} records behind this</summary>
+                      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 6, fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ textAlign: "left" }}>
+                            <th>Record</th><th>Type</th><th>Outcome</th><th>Days</th><th>Reason</th><th>Year</th><th>Source</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {w.evidence.map((r) => (
+                            <tr key={r.id} style={{ borderTop: "1px solid var(--hairline)" }}>
+                              <td>{r.id}</td><td>{r.type}</td><td>{OUTCOME[r.outcome] ?? r.outcome}</td><td>{r.daysToSettle}</td><td>{r.denialReason ?? "—"}</td><td>{r.year}</td>
+                              <td>{r.attestation ? <ExplorerLink signature={r.attestation} /> : "seeded"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </details>
+                  )}
                   {w.error && <span className="small notice notice--fault">Payment failed: {w.error}</span>}
                 </div>
               </li>
@@ -149,6 +174,11 @@ export function ReviewApp({ insurers, levels }: { insurers: Option[]; levels: Le
               <span className="muted" style={{ fontSize: 16 }}> / 100</span>
             </span>
           </div>
+          {review.lowSample && (
+            <p className="notice" style={{ margin: 0, color: "var(--ink)" }}>
+              Low sample: only {review.records} verified claims. Treat this score as indicative, not conclusive.
+            </p>
+          )}
           <p style={{ margin: 0 }}>{review.verdict}</p>
           <dl className="kv">
             {Object.entries(review.metrics).map(([k, v]) => (
@@ -161,7 +191,8 @@ export function ReviewApp({ insurers, levels }: { insurers: Option[]; levels: Le
           <span className="small">
             Built from {review.records} verified claim records · Agent A spent {review.spentUsdc} USDC in {review.signatures.length}{" "}
             {review.signatures.length === 1 ? "payment" : "payments"}
-            {elapsed !== null && ` · ${elapsed.toFixed(1)}s`}
+            {` · agents finished in ${(review.elapsedMs / 1000).toFixed(1)}s (estimate ~${plan?.parallelSeconds}s)`}
+            {elapsed !== null && ` · ${elapsed.toFixed(1)}s end to end`}
           </span>
         </Module>
       )}

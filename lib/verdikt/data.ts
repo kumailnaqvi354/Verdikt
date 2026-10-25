@@ -37,6 +37,8 @@ export const INSURERS: Insurer[] = [
   { id: "albion", name: "Albion Shield", complaintsPer1k: 1.1, profile: { paid: 0.66, partial: 0.14, avgDays: 35, records: 30 } },
   { id: "meridian", name: "Meridian Cover", complaintsPer1k: 0.3, profile: { paid: 0.87, partial: 0.07, avgDays: 16, records: 25 } },
   { id: "tidewell", name: "Tidewell General", complaintsPer1k: 2.6, profile: { paid: 0.48, partial: 0.17, avgDays: 58, records: 33 } },
+  // Few claims on record, to show the low-sample warning.
+  { id: "fenwick", name: "Fenwick Assurance", complaintsPer1k: 0.9, profile: { paid: 0.7, partial: 0.1, avgDays: 30, records: 12 } },
 ];
 
 const TYPES: ClaimType[] = ["home", "motor", "travel", "pet"];

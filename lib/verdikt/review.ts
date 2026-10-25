@@ -18,11 +18,24 @@ export const LEVELS: Record<Level, { label: string; workers: WorkerId[]; pricePe
 
 export type ReviewEvent =
   | { type: "plan"; insurer: string; level: Level; workers: { id: WorkerId; name: string; task: string }[]; sequentialSeconds: number; parallelSeconds: number; totalUsdc: number; reasoning: string }
-  | { type: "payment"; worker: WorkerId; name: string; amountUsdc: number; signature: string; memo: string }
+  | { type: "payment"; worker: WorkerId; name: string; amountUsdc: number; signature: string; memo: string; payMs: number }
   | { type: "payment_failed"; worker: WorkerId; name: string; error: string }
-  | { type: "result"; worker: WorkerId; name: string; summary: string; data: unknown }
-  | { type: "review"; score: number; confidence: "low" | "medium" | "high"; verdict: string; metrics: Record<string, string>; records: number; spentUsdc: number; signatures: string[] }
+  | { type: "result"; worker: WorkerId; name: string; summary: string; data: unknown; workMs: number; evidence: Evidence[] }
+  | { type: "review"; score: number; confidence: "low" | "medium" | "high"; lowSample: boolean; verdict: string; metrics: Record<string, string>; records: number; spentUsdc: number; signatures: string[]; elapsedMs: number }
   | { type: "error"; message: string };
+
+/** A record a worker used, as shown in the drill-down. */
+export type Evidence = Pick<ClaimRecord, "id" | "type" | "outcome" | "daysToSettle" | "denialReason" | "year" | "source" | "attestation">;
+
+/** Below this many verified claims a score is flagged as a low sample. */
+const LOW_SAMPLE = 20;
+
+/** The records each worker draws on (complaints come from the snapshot, not claim records). */
+function evidenceFor(id: WorkerId, insurerId: string): Evidence[] {
+  if (id === "complaints") return [];
+  const rs = recordsFor(insurerId).filter((r) => id !== "denials" || r.denialReason);
+  return rs.map(({ id, type, outcome, daysToSettle, denialReason, year, source, attestation }) => ({ id, type, outcome, daysToSettle, denialReason, year, source, attestation }));
+}
 
 const round = (n: number, d = 1) => Math.round(n * 10 ** d) / 10 ** d;
 const pct = (n: number) => `${round(n * 100)}%`;
@@ -111,21 +124,25 @@ export async function runReview(insurerQuery: string, level: Level, emit: (e: Re
 
   // Hire every worker at once: each is paid first, then runs its task.
   const reviewId = randomBytes(4).toString("hex");
+  const started = Date.now();
   const signatures: string[] = [];
   let spent = 0;
   await Promise.all(
     workers.map(async (w) => {
       const memo = `verdikt:${reviewId}:${w.id}`;
       try {
+        const payStart = Date.now();
         const { signature } = await payUsdc(signer, { to: w.address, amountUsdc: plan.pricePerWorker, memo });
         signatures.push(signature);
         spent += plan.pricePerWorker;
-        emit({ type: "payment", worker: w.id, name: w.name, amountUsdc: plan.pricePerWorker, signature, memo });
+        emit({ type: "payment", worker: w.id, name: w.name, amountUsdc: plan.pricePerWorker, signature, memo, payMs: Date.now() - payStart });
       } catch (e) {
         return emit({ type: "payment_failed", worker: w.id, name: w.name, error: e instanceof Error ? e.message : String(e) });
       }
+      const workStart = Date.now();
       const out = runWorker(w.id, insurer.id);
-      emit({ type: "result", worker: w.id, name: w.name, ...out });
+      const evidence = evidenceFor(w.id, insurer.id);
+      emit({ type: "result", worker: w.id, name: w.name, ...out, evidence, workMs: Date.now() - workStart });
     }),
   );
   if (!signatures.length) return emit({ type: "error", message: "No worker could be paid, so no evidence was gathered." });
@@ -143,6 +160,7 @@ export async function runReview(insurerQuery: string, level: Level, emit: (e: Re
     type: "review",
     score: s,
     confidence: level,
+    lowSample: records.length < LOW_SAMPLE,
     verdict,
     metrics: {
       "Verified claims": String(records.length),
@@ -153,5 +171,6 @@ export async function runReview(insurerQuery: string, level: Level, emit: (e: Re
     records: records.length,
     spentUsdc: round(spent, 4),
     signatures,
+    elapsedMs: Date.now() - started,
   });
 }

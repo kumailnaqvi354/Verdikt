@@ -132,7 +132,7 @@ export default function ClaimPage() {
       )}
 
       {error && <p className="notice notice--fault">{error}</p>}
-      <p className="small muted">Demo: only letters from the six fictional demo insurers are accepted.</p>
+      <p className="small muted">Demo: only letters from the fictional demo insurers are accepted.</p>
     </>
   );
 }
