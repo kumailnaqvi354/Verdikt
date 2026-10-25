@@ -1,0 +1,186 @@
+{
+  "scaffoldVersion": "0.13.1",
+  "framework": "next",
+  "modules": [
+    "race",
+    "gemini",
+    "payments",
+    "spending",
+    "paidapi"
+  ],
+  "autoAddedModules": [],
+  "files": [
+    ".env.example",
+    ".gitignore",
+    "README.md",
+    "app/agent-studio/v1/health/route.ts",
+    "app/agent-studio/v1/tasks/route.ts",
+    "app/api/buy/route.ts",
+    "app/api/chat/route.ts",
+    "app/api/premium/route.ts",
+    "app/chat/page.tsx",
+    "app/globals.css",
+    "app/layout.tsx",
+    "app/page.tsx",
+    "app/premium/page.tsx",
+    "app/race/page.tsx",
+    "components/Nav.tsx",
+    "components/ui.tsx",
+    "lib/ai/gemini.ts",
+    "lib/modules.ts",
+    "lib/paidapi/buyer.ts",
+    "lib/payments/client.ts",
+    "lib/payments/config.ts",
+    "lib/payments/server.ts",
+    "lib/payments/transfer.ts",
+    "lib/race/adapter.ts",
+    "lib/race/handlers.ts",
+    "lib/race/memory.ts",
+    "lib/race/protocol.ts",
+    "lib/race/tools.ts",
+    "lib/spending/attach.ts",
+    "lib/spending/policy.ts",
+    "lib/spending/tracker.ts",
+    "next.config.ts",
+    "package.json",
+    "scripts/keygen.ts",
+    "scripts/pay.ts",
+    "scripts/race-try.ts",
+    "scripts/test-race.ts",
+    "scripts/test-spending-x402.ts",
+    "scripts/test-spending.ts",
+    "scripts/test-transfer.ts",
+    "scripts/wallets.ts",
+    "studio.manifest.json",
+    "tsconfig.json"
+  ],
+  "dependencies": {
+    "@google/genai": "2.28.0",
+    "@solana-program/token": "0.9.0",
+    "@solana/kit": "5.5.1",
+    "@x402/core": "2.28.0",
+    "@x402/fetch": "2.28.0",
+    "@x402/next": "2.28.0",
+    "@x402/svm": "2.28.0",
+    "next": "16.4.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "server-only": "0.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test:race": "tsx --test scripts/test-race.ts",
+    "race:try": "tsx scripts/race-try.ts",
+    "keygen": "tsx scripts/keygen.ts",
+    "wallets": "tsx scripts/wallets.ts",
+    "test:transfer": "tsx --test scripts/test-transfer.ts",
+    "test:spending": "tsx --test scripts/test-spending.ts scripts/test-spending-x402.ts",
+    "pay": "tsx --conditions=react-server scripts/pay.ts"
+  },
+  "env": [
+    {
+      "key": "AGENT_STUDIO_VERIFIER_TOKEN",
+      "required": true,
+      "secret": true,
+      "module": "race"
+    },
+    {
+      "key": "AGENT_STUDIO_APP_NAME",
+      "required": false,
+      "secret": false,
+      "module": "race"
+    },
+    {
+      "key": "UPSTASH_REDIS_REST_URL",
+      "required": false,
+      "secret": false,
+      "module": "race"
+    },
+    {
+      "key": "UPSTASH_REDIS_REST_TOKEN",
+      "required": false,
+      "secret": true,
+      "module": "race"
+    },
+    {
+      "key": "GEMINI_API_KEY",
+      "required": true,
+      "secret": true,
+      "module": "gemini"
+    },
+    {
+      "key": "GEMINI_MODEL",
+      "required": false,
+      "secret": false,
+      "module": "gemini"
+    },
+    {
+      "key": "PAY_TO_ADDRESS",
+      "required": true,
+      "secret": false,
+      "module": "payments"
+    },
+    {
+      "key": "X402_NETWORK",
+      "required": false,
+      "secret": false,
+      "module": "payments"
+    },
+    {
+      "key": "X402_FACILITATOR_URL",
+      "required": false,
+      "secret": false,
+      "module": "payments"
+    },
+    {
+      "key": "AGENT_PRIVATE_KEY",
+      "required": false,
+      "secret": true,
+      "module": "payments"
+    },
+    {
+      "key": "SOLANA_RPC_URL",
+      "required": false,
+      "secret": false,
+      "module": "payments"
+    },
+    {
+      "key": "AGENT_BUDGET_USD",
+      "required": false,
+      "secret": false,
+      "module": "spending"
+    },
+    {
+      "key": "MAX_PAYMENT_USD",
+      "required": false,
+      "secret": false,
+      "module": "spending"
+    },
+    {
+      "key": "PAID_API_PRICE_USD",
+      "required": false,
+      "secret": false,
+      "module": "paidapi"
+    }
+  ],
+  "prerequisites": [
+    "Node.js 20.9 or newer (22 LTS recommended)",
+    "A team on Agent Studio (for the verifier token)",
+    "A public https:// URL when you race (deploy, or a tunnel such as ngrok)",
+    "Google account",
+    "Gemini API key from Google AI Studio (free tier is enough)",
+    "A Solana devnet address to receive test payments (PAY_TO_ADDRESS); `npm run keygen -- --pay-to` makes one",
+    "To pay: a throwaway devnet keypair (`npm run keygen`) funded with devnet USDC from https://faucet.circle.com (no real money)",
+    "The receiving address also needs a devnet USDC token account: send it faucet USDC once"
+  ]
+}

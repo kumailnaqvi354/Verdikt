@@ -1,0 +1,11 @@
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Secrets: never commit these.
+.env
+.env.local
+.env.*.local
+*.keypair.json
